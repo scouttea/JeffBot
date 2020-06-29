@@ -1,0 +1,6 @@
+* Improve Commands <-> Modules interface
+* Add Bridge between Discord api and uses
+  -Send function
+  -Get attachments
+  -Etc
+* Add a Config service

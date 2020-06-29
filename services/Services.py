@@ -22,6 +22,12 @@ class ServiceProvider():
         self.__package__ = ""
         self._services = {}
 
+    def Service(self,name):
+        def wrap(cls):
+            self.register_service(name,cls())
+            return cls
+        return wrap
+
     def register_service(self,name,delegate):
         if name in self._services:
             raise Exception(name + " is already registered as a serivce")
