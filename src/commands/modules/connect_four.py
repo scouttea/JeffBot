@@ -20,8 +20,8 @@ async def command(message):
 
     # convert to meaningful variables
     rows, cols = rowcols[0].split('x')
-    rows = max(1, min(10, int(rows)))
     cols = max(1, min(len(_COLS)-1, int(cols)))
+    rows = max(1, min(100//cols, int(rows)))
     n_players = max(1, min(len(_PLAYERS)-1, int(n_players[0].split('=')[1])))
     n_connect = max(0, int(n_connect[0]))
 
@@ -49,9 +49,8 @@ async def command(message):
     await msg.clear_reactions()
     await msg.edit(content=f"Playing connect {n_connect} on a {rows}x{cols} board with {n_players} players.\nCurrently playing: {', '.join(f'{u.name} {_PLAYERS[i+1]}' for i, u in enumerate(users))}.")
 
-    # Create game TODODOTODODODOO CLEANUP SLKJLFJDS
+    # Create game
     g = Game(rows=rows, cols=cols, n_connect=n_connect, n_players=n_players)
-
 
     # Build board
     msgs = [
@@ -144,9 +143,9 @@ class Board:
             n_connect = 4
 
         try:
-            rows = max(1, min(10, int(rows)))
-            cols = max(1, min(len(col_names)-1, int(cols)))
-            n_connect = max(0, int(n_connect))
+            rows = int(rows)
+            cols = int(cols)
+            n_connect = int(n_connect)
         except ValueError:
             raise AssertionError('Rows and cols should be numbers')
 
