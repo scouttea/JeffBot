@@ -22,7 +22,7 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user:
         return
-    await Command.respond(message)
+    await Command.respond(message, client)
 
 
 client.run(token)
