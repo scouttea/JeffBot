@@ -1,30 +1,44 @@
 import asyncio
+import re
 
 from typing import Tuple
 from ServiceProvider import Command
 
 
-_PLAYER1 = '🔴'
-_PLAYER2 = '🟡'
-
 _COLS = (':one:', ':two:', ':three:', ':four:', ':five:', ':six:', ':seven:', ':eight:', ':nine:', ':regional_indicator_a:', ':regional_indicator_b:', ':regional_indicator_c:', ':regional_indicator_d:', ':regional_indicator_e:', ':regional_indicator_f:', ':regional_indicator_g:', ':regional_indicator_h:', ':regional_indicator_i:', ':regional_indicator_j:', ':regional_indicator_k:')
 _REACTIONS = ('1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🇦', '🇧', '🇨', '🇩', '🇪', '🇫', '🇬', '🇭', '🇮', '🇯', '🇰')
-_PLAYERS = ('⚫', _PLAYER1, _PLAYER2)
+_PLAYERS = ('⚫', '🔴', '🟡', '🔵', '⚪', '🟢', '🟠', '🟣', '🟤')
 
 @Command.register("connect")
 async def command(message):
-    msg = await message.reply("Choose your color")
-    await msg.add_reaction(_PLAYER1)
-    await msg.add_reaction(_PLAYER2)
+
+    # Parse input variables
+    content = message.content
+    n_players = re.findall(r'players=[0-9]*', content) + ['players=2']
+    n_connect = re.findall(r'^[0-9]+', content) + ['4']
+    rowcols = re.findall(r'[0-9]*x[0-9]*', content) + ['6x7']
+
+    # convert to meaningful variables
+    rows, cols = rowcols[0].split('x')
+    rows = max(1, min(10, int(rows)))
+    cols = max(1, min(len(_COLS)-1, int(cols)))
+    n_players = max(1, min(len(_PLAYERS)-1, int(n_players[0].split('=')[1])))
+    n_connect = max(0, int(n_connect[0]))
+
+    msg = await message.reply(f"Playing connect {n_connect} on a {rows}x{cols} board with {n_players} players.\nChoose your color.")
 
     # Player selection
-    users = [1, None, None]
+    for i in range(n_players):
+        await msg.add_reaction(_PLAYERS[i+1])
+
+    # Player selection
+    users = [None] * n_players
     client = message.client
     while not all(users):
         try:
             reaction, user = await client.wait_for('reaction_add', timeout=60.0)
-            if reaction.message.id == msg.id and reaction.emoji in _PLAYERS[1:]:
-                i = _PLAYERS.index(reaction.emoji)
+            if reaction.message.id == msg.id and reaction.emoji in _PLAYERS[1:n_players+2]:
+                i = _PLAYERS.index(reaction.emoji) - 1
                 if not user.bot and users[i] is None:
                     users[i] = user
 
@@ -32,12 +46,11 @@ async def command(message):
             await msg.delete()
             return
 
-    await msg.delete()
+    await msg.clear_reactions()
+    await msg.edit(content=f"Playing connect {n_connect} on a {rows}x{cols} board with {n_players} players.\nCurrently playing: {', '.join(f'{u.name} {_PLAYERS[i+1]}' for i, u in enumerate(users))}.")
 
     # Create game TODODOTODODODOO CLEANUP SLKJLFJDS
-    n_connect, rowcols = message.content.split(' ')
-    rows, cols = rowcols.split('x')
-    g = Game(rows=rows, cols=cols, n_connect=n_connect)
+    g = Game(rows=rows, cols=cols, n_connect=n_connect, n_players=n_players)
 
 
     # Build board
@@ -50,7 +63,7 @@ async def command(message):
         await msgs[0].add_reaction(_REACTIONS[row])
 
     while g.has_won() is None:
-        curr_user = users[g.turn()]
+        curr_user = users[g.turn()-1]
         curr_color = _PLAYERS[g.turn()]
         await msgs[0].edit(content=f"It's {curr_user.name}'s turn ({curr_color})")
 
@@ -64,7 +77,7 @@ async def command(message):
                             row, col = g.do_move(_REACTIONS.index(reaction.emoji))
 
                             content = [list(m) for m in msgs[-1].content.split('\n')]
-                            content[-row-1][col] = curr_color
+                            content[-row-2][col] = curr_color
                             await msgs[-1].edit(content='\n'.join(''.join(c) for c in content))
                         except (AssertionError, IndexError):
                             pass
@@ -81,7 +94,7 @@ async def command(message):
         if g.has_won() == 0:
             await msgs[0].edit(content='Game has finished in a draw.')
         else:
-            await msgs[0].edit(content=f'Game has finished and {users[g.has_won()].name} has won!!!!')
+            await msgs[0].edit(content=f'Game has finished and {users[g.has_won()-1].name} has won!!!!')
 
 
 
@@ -142,7 +155,7 @@ class Board:
         self._col_names = tuple(col_names)
         self._n_connect = n_connect
 
-    def do_move(self, player_1: bool, col: int) -> Tuple[int, int]:
+    def do_move(self, player: int, col: int) -> Tuple[int, int]:
         """
         >>> b = Board(4, 4)
         >>> b.do_move(True, 0)
@@ -167,7 +180,7 @@ class Board:
             row += 1
             assert row < self.rows(), 'Invalid row'
 
-        self._board[row][col] = 1 if player_1 else 2
+        self._board[row][col] = player
         return row, col
 
     def check_vertical(self, r, c):
@@ -301,7 +314,7 @@ class Board:
         str1 = '\n'.join(''.join(self._player_names[p] for p in row).strip()
                          for row in self._board[::-1])
 
-        return f'{str0}\n{str1}'
+        return f'{str0}\n{str1}\n{str0}'
 
 
 #    _____
@@ -317,17 +330,18 @@ class Board:
 
 class Game:
 
-    def __init__(self, rows=6, cols=7, n_connect=4):
+    def __init__(self, rows=6, cols=7, n_connect=4, n_players=2):
         self._board = Board(rows, cols, _PLAYERS, _COLS, n_connect)
 
         self._turn = 0
-        self._has_won = 3 if self._board.n_connect() > 0 else 1
+        self._has_won = n_players+1 if self._board.n_connect() > 0 else 1
+        self._n_players = n_players
 
     def has_won(self):
-        return None if self._has_won == 3 else self._has_won
+        return None if self._has_won == self._n_players+1 else self._has_won
 
     def turn(self):
-        return (self._turn % 2) + 1
+        return (self._turn % self._n_players) + 1
 
     def cols(self):
         return self._board.cols()
@@ -346,9 +360,9 @@ class Game:
         >>> g.has_won()
         1
         """
-        assert self._has_won == 3, 'Game already finished'
+        assert self._has_won == (self._n_players + 1), 'Game already finished'
 
-        row, col = self._board.do_move(self.turn() == 1, col)
+        row, col = self._board.do_move(self.turn(), col)
         self.update_win(row, col)
         return row, col
 
@@ -363,7 +377,7 @@ class Game:
             self._has_won = self.turn()
         self._turn += 1
         if self._turn >= self._board.rows() * self._board.cols():
-            if self._has_won == 3:
+            if self._has_won == self._n_players + 1:
                 self._has_won = 0
 
 
