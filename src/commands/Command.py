@@ -15,7 +15,7 @@ class CommandBridge():
 class Commands(Registry):
     async def respond(self,message,client):
         try:
-            r = re.match("^!([^ ]+)( |$)(.*)",message.content)
+            r = re.match("^!([^ ]+)( |$)+(.*)",message.content)
             name,_,args = r.groups()
             if name not in self.registry:
                 return None

@@ -3,27 +3,46 @@ import re
 
 from typing import Tuple
 from ServiceProvider import Command
+import numpy as np
+from math import prod
 
+import argparse
 
 _COLS = (':one:', ':two:', ':three:', ':four:', ':five:', ':six:', ':seven:', ':eight:', ':nine:', ':regional_indicator_a:', ':regional_indicator_b:', ':regional_indicator_c:', ':regional_indicator_d:', ':regional_indicator_e:', ':regional_indicator_f:', ':regional_indicator_g:', ':regional_indicator_h:', ':regional_indicator_i:', ':regional_indicator_j:', ':regional_indicator_k:')
 _REACTIONS = ('1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🇦', '🇧', '🇨', '🇩', '🇪', '🇫', '🇬', '🇭', '🇮', '🇯', '🇰')
 _PLAYERS = ('⚫', '🔴', '🟡', '🔵', '⚪', '🟢', '🟠', '🟣', '🟤')
 
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise Exception(self.format_help())
+
+def size(q):
+    m = re.match("([0-9]+)x([0-9]+)",q)
+    if m:
+        return (int(m.group(1)),int(m.group(2)))
+    raise Exception("invalid format")
+
+def bound(a,x,b):
+    return max(a,min(x,b))
+
 @Command.register("connect")
 async def command(message):
+    parser = ArgumentParser(description='Connect n in a row', prog="!connect",add_help=False,formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-connect' , metavar='N', type=int,help='how many pieces in a row the player needs to win',nargs="?",default=4)
+    parser.add_argument('-size', metavar='AxB', type=size,help="how big the board is",nargs="?",default="6x7")
+    parser.add_argument('-players', metavar="M", type=int,nargs="?",default=2, help="how many player can play")
+    try:
+        k = parser.parse_args(message.content.split(" ") if message.content else [])
+    except Exception as e:
+        await message.reply(f"```{parser.format_help()}```")
+        return
 
-    # Parse input variables
-    content = message.content
-    n_players = re.findall(r'players=[0-9]*', content) + ['players=2']
-    n_connect = re.findall(r'^[0-9]+', content) + ['4']
-    rowcols = re.findall(r'[0-9]*x[0-9]*', content) + ['6x7']
-
-    # convert to meaningful variables
-    rows, cols = rowcols[0].split('x')
-    cols = max(1, min(len(_COLS)-1, int(cols)))
-    rows = max(1, min(100//cols, int(rows)))
-    n_players = max(1, min(len(_PLAYERS)-1, int(n_players[0].split('=')[1])))
-    n_connect = max(0, int(n_connect[0]))
+    k=vars(k)
+    rows, cols = k["size"]
+    cols = bound(1,cols,len(_COLS)-1)
+    rows = bound(1,rows,(2000//cols-1)//16)
+    n_players = bound(1,k["players"],len(_PLAYERS)-1)
+    n_connect = max(0,k["connect"])
 
     msg = await message.reply(f"Playing connect {n_connect} on a {rows}x{cols} board with {n_players} players.\nChoose your color.")
 
@@ -37,351 +56,103 @@ async def command(message):
     while not all(users):
         try:
             reaction, user = await client.wait_for('reaction_add', timeout=60.0)
+            #replace with check
             if reaction.message.id == msg.id and reaction.emoji in _PLAYERS[1:n_players+2]:
                 i = _PLAYERS.index(reaction.emoji) - 1
                 if not user.bot and users[i] is None:
                     users[i] = user
 
         except asyncio.TimeoutError:
-            await msg.delete()
+            await msg.clear_reactions()
+            await msg.edit(content="Not enough players unfortunatly")
             return
 
     await msg.clear_reactions()
     await msg.edit(content=f"Playing connect {n_connect} on a {rows}x{cols} board with {n_players} players.\nCurrently playing: {', '.join(f'{u.name} {_PLAYERS[i+1]}' for i, u in enumerate(users))}.")
 
-    # Create game
-    g = Game(rows=rows, cols=cols, n_connect=n_connect, n_players=n_players)
+    board = Board(rows,cols,n_connect)
 
-    # Build board
-    msgs = [
-        await message.reply(f"Building board..."),
-        await message.reply(str(g)),
-    ]
+    status = await message.reply(f"Building board...")
+    header = await message.reply('\u200c'.join(_COLS[:cols]).strip())
+    body   = await message.reply("\n".join(['\u200c'.join([_PLAYERS[int(i)] for i in r]) for r in board.board()]))
+    footer = await message.reply('\u200c'.join(_COLS[:cols]).strip())
 
-    for row in range(g.cols()):
-        await msgs[0].add_reaction(_REACTIONS[row])
+    if n_connect == 0:
+        await status.edit(content=f'Game has finished and {users[0].name} has won!!!!')
+        return
 
-    while g.has_won() is None:
-        curr_user = users[g.turn()-1]
-        curr_color = _PLAYERS[g.turn()]
-        await msgs[0].edit(content=f"It's {curr_user.name}'s turn ({curr_color})")
+    for row in range(cols):
+        await status.add_reaction(_REACTIONS[row])
+
+    turn = 0
+    while not board.done():
+        curr_user = users[turn]
+        curr_color = _PLAYERS[turn+1]
+        await status.edit(content=f"It's {curr_user.name}'s turn ({curr_color})")
 
         while True:
             try:
                 reaction, user = await client.wait_for('reaction_add', timeout=12*60*60)
-                if msgs[0].id == reaction.message.id:
+                if status.id == reaction.message.id:
                     if user.id == curr_user.id and reaction.emoji in _REACTIONS:
                         try:
                             # can do move
-                            row, col = g.do_move(_REACTIONS.index(reaction.emoji))
-
-                            content = [list(m) for m in msgs[-1].content.split('\n')]
-                            content[-row-2][col] = curr_color
-                            await msgs[-1].edit(content='\n'.join(''.join(c) for c in content))
-                        except (AssertionError, IndexError):
+                            board.do_move(turn+1,_REACTIONS.index(reaction.emoji))
+                            await body.edit(content="\n".join(['\u200c'.join([_PLAYERS[int(i)] for i in r]) for r in board.board()]))
+                            turn = (turn + 1) % len(users)
+                        except Exception as e:
                             pass
-
                         await reaction.remove(user)
                         break
-
-
-
             except asyncio.TimeoutError:
                 return
 
-    if g.has_won() is not None:
-        if g.has_won() == 0:
-            await msgs[0].edit(content='Game has finished in a draw.')
-        else:
-            await msgs[0].edit(content=f'Game has finished and {users[g.has_won()-1].name} has won!!!!')
+    if board.winners:
+        await status.edit(content=f'Game has finished and {" ,".join([users[int(i)].name for i in board.winners])} has won!!!!')
+    else:
+        await status.edit(content='Game has finished in a draw.')
 
-
-
-#   ____                      _
-#  |  _ \                    | |
-#  | |_) | ___   __ _ _ __ __| |
-#  |  _ < / _ \ / _` | '__/ _` |
-#  | |_) | (_) | (_| | | | (_| |
-#  |____/ \___/ \__,_|_|  \__,_|
-#
-#  Board
-
-DEFAULT_PLAYER_NAMES = ('_ ', 'O ', 'X ')
-DEFAULT_COL_NAMES = tuple(f'{x} ' for x in range(1, 10))
-
+def check_up_diag(board,n_connect):
+    winners = set()
+    r,c = board.shape
+    p = board[0,:]
+    d = np.r_[0, p[:-1]]
+    w1,w2 = np.zeros(c),np.zeros(c)
+    for i in range(1,r):
+        q = board[i,:]
+        w1,w2 = (w1+1)*(p == q), (w2+1)*(d == q)
+        winners.update(q[w1 >= n_connect-1])
+        winners.update(q[w2 >= n_connect-1])
+        w2 = np.r_[0, w2[:-1]]
+        p = q
+        d = np.r_[0, p[:-1]]
+    return winners
 
 class Board:
+    def __init__(self, rows, cols, n_connect):
+        self._board = np.zeros((rows,cols))
+        self.n_connect = n_connect
+        self.index = np.arange(rows)
+        self.filled = 0
+        self.winners = set()
 
-    _board = [[]]
-
-    def rows(self):
-        return len(self._board)
-
-    def cols(self):
-        return len(self._board[0])
-
-    def n_connect(self):
-        return self._n_connect
-
-    def __init__(self, rows=None, cols=None, player_names=DEFAULT_PLAYER_NAMES, col_names=DEFAULT_COL_NAMES, n_connect=None):
-        """
-        >>> b = Board(); (b.rows(), b.cols())
-        (6, 7)
-        >>> b = Board(4, 6); (b.rows(), b.cols())
-        (4, 6)
-        >>> try: Board(0, 0)
-        ... except AssertionError: pass
-        >>> try: Board('ahaha', 'frick')
-        ... except AssertionError: pass
-        """
-
-        if rows is None:
-            rows = 6
-        if cols is None:
-            cols = 7
-        if n_connect is None:
-            n_connect = 4
-
+    def do_move(self, player, col):
         try:
-            rows = int(rows)
-            cols = int(cols)
-            n_connect = int(n_connect)
-        except ValueError:
-            raise AssertionError('Rows and cols should be numbers')
+            row = self.index[self._board[:,col]==0][-1]
+            self._board[row,col] = player
+            self.filled += 1
+            return row, col
+        except Exception as e:
+            raise Exception("invalid move")
 
-        self._board = [[0] * cols for _ in range(rows)]
-        self._player_names = tuple(player_names)
-        self._col_names = tuple(col_names)
-        self._n_connect = n_connect
+    def done(self):
+        self.winners = self._winners()
+        return self.winners or (self.filled >= prod(self._board.shape))
 
-    def do_move(self, player: int, col: int) -> Tuple[int, int]:
-        """
-        >>> b = Board(4, 4)
-        >>> b.do_move(True, 0)
-        (0, 0)
-        >>> try: b.do_move(True, -1)
-        ... except AssertionError: pass
-        >>> try: b.do_move(True, 8)
-        ... except AssertionError: pass
-        >>> b.do_move(True, 0)
-        (1, 0)
-        >>> b.do_move(True, 0)
-        (2, 0)
-        >>> b.do_move(True, 0)
-        (3, 0)
-        >>> try: b.do_move(False, 0)
-        ... except AssertionError: pass
-        """
-        assert 0 <= col <= self.cols(), 'Invalid column'
+    def _winners(self):
+        p = check_up_diag(self._board,self.n_connect)
+        q = check_up_diag(np.flip(self._board.T,0),self.n_connect)
+        return (p | q) - {0}
 
-        row = 0
-        while self._board[row][col] != 0:
-            row += 1
-            assert row < self.rows(), 'Invalid row'
-
-        self._board[row][col] = player
-        return row, col
-
-    def check_vertical(self, r, c):
-        """
-        >>> b = Board(4, 4)
-        >>> b.check_vertical(*b.do_move(True, 0))
-        False
-        >>> b.check_vertical(*b.do_move(True, 0))
-        False
-        >>> b.check_vertical(*b.do_move(True, 0))
-        False
-        >>> b.check_vertical(*b.do_move(True, 0))
-        True
-        """
-        board = self._board
-        rows = self.rows()
-        a = b = 1
-
-        while r - a >= 000 and board[r - a][c] == board[r][c]: a += 1
-        while r + b < rows and board[r + b][c] == board[r][c]: b += 1
-
-        return (a - 1) + (b - 1) >= self._n_connect-1
-
-    def check_horizontal(self, r, c):
-        """
-        >>> b = Board(4, 4)
-        >>> b.check_horizontal(*b.do_move(True, 0))
-        False
-        >>> b.check_horizontal(*b.do_move(True, 2))
-        False
-        >>> b.check_horizontal(*b.do_move(True, 3))
-        False
-        >>> b.check_horizontal(*b.do_move(True, 1))
-        True
-        """
-        board = self._board
-        cols = self.cols()
-        a = b = 1
-
-        while c - a >= 000 and board[r][c - a] == board[r][c]: a += 1
-        while c + b < cols and board[r][c + b] == board[r][c]: b += 1
-
-        return (a - 1) + (b - 1) >= self._n_connect-1
-
-    def check_diag0(self, r, c):
-        """
-        >>> b = Board(4, 4)
-        >>> _ = b.do_move(False, 3)
-        >>> _ = b.do_move(False, 3)
-        >>> _ = b.do_move(False, 3)
-        >>> _ = b.do_move(False, 2)
-        >>> _ = b.do_move(False, 2)
-        >>> _ = b.do_move(False, 1)
-        >>> b.check_diag0(*b.do_move(True, 0))
-        False
-        >>> b.check_diag0(*b.do_move(True, 2))
-        False
-        >>> b.check_diag0(*b.do_move(True, 3))
-        False
-        >>> b.check_diag0(*b.do_move(True, 1))
-        True
-        """
-        board = self._board
-        rows = self.rows()
-        cols = self.cols()
-        a = b = 1
-
-        while r - a >= 000 and c - a >= 000 and board[r - a][c - a] == board[r][c]: a += 1
-        while r + b < rows and c + b < cols and board[r + b][c + b] == board[r][c]: b += 1
-
-        return (a - 1) + (b - 1) >= self._n_connect-1
-
-    def check_diag1(self, r, c):
-        """
-        >>> b = Board(4, 4)
-        >>> _ = b.do_move(False, 0)
-        >>> _ = b.do_move(False, 0)
-        >>> _ = b.do_move(False, 0)
-        >>> _ = b.do_move(False, 1)
-        >>> _ = b.do_move(False, 1)
-        >>> _ = b.do_move(False, 2)
-        >>> b.check_diag1(*b.do_move(True, 0))
-        False
-        >>> b.check_diag1(*b.do_move(True, 2))
-        False
-        >>> b.check_diag1(*b.do_move(True, 3))
-        False
-        >>> b.check_diag1(*b.do_move(True, 1))
-        True
-        """
-        board = self._board
-        rows = self.rows()
-        cols = self.cols()
-        a = b = 1
-
-        while r - a >= 000 and c + a < cols and board[r - a][c + a] == board[r][c]: a += 1
-        while r + b < rows and c - b >= 000 and board[r + b][c - b] == board[r][c]: b += 1
-
-        return (a - 1) + (b - 1) >= self._n_connect-1
-
-    def check_4_in_row(self, row, col):
-        return self.check_vertical(row, col)\
-                or self.check_horizontal(row, col)\
-                or self.check_diag0(row, col)\
-                or self.check_diag1(row, col)
-
-    def __repr__(self):
-        """
-        >>> b = Board(4, 4)
-        >>> b
-        1 2 3 4
-        _ _ _ _
-        _ _ _ _
-        _ _ _ _
-        _ _ _ _
-        >>> _ = b.do_move(True, 1)
-        >>> _ = b.do_move(False, 1)
-        >>> _ = b.do_move(True, 0)
-        >>> _ = b.do_move(False, 2)
-        >>> _ = b.do_move(True, 3)
-        >>> _ = b.do_move(False, 0)
-        >>> _ = b.do_move(True, 0)
-        >>> b
-        1 2 3 4
-        _ _ _ _
-        O _ _ _
-        X X _ _
-        O O X O
-        """
-        str0 = '\u200c'.join(self._col_names[i] for i in range(self.cols())).strip()
-        str1 = '\n'.join(''.join(self._player_names[p] for p in row).strip()
-                         for row in self._board[::-1])
-
-        return f'{str0}\n{str1}\n{str0}'
-
-
-#    _____
-#   / ____|
-#  | |  __  __ _ _ __ ___   ___
-#  | | |_ |/ _` | '_ ` _ \ / _ \
-#  | |__| | (_| | | | | | |  __/
-#   \_____|\__,_|_| |_| |_|\___|
-#
-#  Game
-
-
-
-class Game:
-
-    def __init__(self, rows=6, cols=7, n_connect=4, n_players=2):
-        self._board = Board(rows, cols, _PLAYERS, _COLS, n_connect)
-
-        self._turn = 0
-        self._has_won = n_players+1 if self._board.n_connect() > 0 else 1
-        self._n_players = n_players
-
-    def has_won(self):
-        return None if self._has_won == self._n_players+1 else self._has_won
-
-    def turn(self):
-        return (self._turn % self._n_players) + 1
-
-    def cols(self):
-        return self._board.cols()
-
-    def do_move(self, col: int):
-        """
-        >>> g = Game()
-        >>> _ = g.do_move(3)
-        >>> _ = g.do_move(2)
-        >>> _ = g.do_move(3)
-        >>> _ = g.do_move(2)
-        >>> _ = g.do_move(3)
-        >>> g.has_won()
-        >>> _ = g.do_move(2)
-        >>> _ = g.do_move(3)
-        >>> g.has_won()
-        1
-        """
-        assert self._has_won == (self._n_players + 1), 'Game already finished'
-
-        row, col = self._board.do_move(self.turn(), col)
-        self.update_win(row, col)
-        return row, col
-
-    def __repr__(self):
-        return repr(self._board)
-
-    def __str__(self):
-        return repr(self._board)
-
-    def update_win(self, row, col):
-        if self._board.check_4_in_row(row, col):
-            self._has_won = self.turn()
-        self._turn += 1
-        if self._turn >= self._board.rows() * self._board.cols():
-            if self._has_won == self._n_players + 1:
-                self._has_won = 0
-
-
-if __name__ == '__main__':
-    import doctest
-
-    doctest.testmod()
-
+    def board(self):
+        return self._board
