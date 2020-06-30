@@ -4,6 +4,11 @@ import services.Services
 import commands.Command
 
 from ServiceProvider import Command
+from ServiceProvider import Service
+
+@Service("TempStore")
+class TemporaryStore:
+    pass
 
 client = discord.Client()
 config = configparser.ConfigParser()
