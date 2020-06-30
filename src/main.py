@@ -24,7 +24,8 @@ async def on_message(message):
         return
     await Command.respond(message)
 
-
-client.run(token)
-print("bye")
+try:
+    client.run(token)
+finally:
+    print("bye")
 
