@@ -13,5 +13,5 @@ profanity==1.1
 pyfiglet==0.8.post1
 requests==2.24.0
 urllib3==1.25.9
-websockets==8.1
+websockets==9.1
 yarl==1.4.2
